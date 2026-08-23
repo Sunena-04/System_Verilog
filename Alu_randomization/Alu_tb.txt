@@ -1,0 +1,187 @@
+// ALU Testbench – Constrained‑Random Vectors with Waveform Dumping
+module tb_alu;
+
+    logic [2:0] opcode;
+    logic [7:0] a, b;
+    logic [7:0] result;
+    logic       zero, carry, overflow;
+
+    alu dut (.*);
+
+    // ---------- Transaction class ----------
+    class alu_trans;
+        typedef enum bit [2:0] {
+            ADD = 0,
+            SUB = 1,
+            MUL = 2,
+            DIV = 3,
+            AND = 4,
+            OR  = 5,
+            XOR = 6,
+            NOT = 7
+        } op_e;
+
+        rand op_e      opcode;
+        rand bit [7:0] a, b;
+
+        // Weighted distribution
+        constraint opcode_dist {
+            opcode dist {
+                ADD := 25,
+                SUB := 20,
+                MUL := 15,
+                DIV := 10,
+                AND := 10,
+                OR  := 8,
+                XOR := 7,
+                NOT := 5
+            };
+        }
+
+        constraint mul_small {
+            if (opcode == MUL) {
+                a inside {[0:15]};
+                b inside {[0:15]};
+            }
+        }
+
+        // For DIV, avoid divide‑by‑zero
+        constraint div_nonzero {
+            if (opcode == DIV) b != 0;
+        }
+
+        // Soft constraint – prefer even numbers (can be overridden)
+        constraint soft_even {
+            soft a % 2 == 0;
+            soft b % 2 == 0;
+        }
+
+        function void display(string prefix = "");
+            $display("%s opcode=%0d (%s), a=%0d, b=%0d",
+                     prefix, opcode, opcode.name(), a, b);
+        endfunction
+    endclass
+
+    // ---------- Reference model ----------
+    function void compute_expected(
+        input  logic [2:0] op,
+        input  logic [7:0] a, b,
+        output logic [7:0] exp_result,
+        output logic       exp_zero,
+        output logic       exp_carry,
+        output logic       exp_overflow
+    );
+        logic [8:0] sum, diff;
+
+        case (op)
+            0: begin // ADD
+                sum = {1'b0, a} + {1'b0, b};
+                exp_result  = sum[7:0];
+                exp_carry   = sum[8];
+                exp_overflow = (a[7] & b[7] & ~exp_result[7]) |
+                               (~a[7] & ~b[7] & exp_result[7]);
+            end
+            1: begin // SUB
+                diff = {1'b0, a} - {1'b0, b};
+                exp_result  = diff[7:0];
+                exp_carry   = diff[8];
+                exp_overflow = (a[7] & ~b[7] & ~exp_result[7]) |
+                               (~a[7] & b[7] & exp_result[7]);
+            end
+            2: begin // MUL
+                exp_result = a * b;
+                exp_carry  = 1'b0;
+                exp_overflow = 1'b0;
+            end
+            3: begin // DIV
+                exp_result = (b == 0) ? 8'hFF : a / b;
+                exp_carry  = 1'b0;
+                exp_overflow = 1'b0;
+            end
+            4: begin // AND
+                exp_result = a & b;
+                exp_carry  = 1'b0;
+                exp_overflow = 1'b0;
+            end
+            5: begin // OR
+                exp_result = a | b;
+                exp_carry  = 1'b0;
+                exp_overflow = 1'b0;
+            end
+            6: begin // XOR
+                exp_result = a ^ b;
+                exp_carry  = 1'b0;
+                exp_overflow = 1'b0;
+            end
+            7: begin // NOT
+                exp_result = ~a;
+                exp_carry  = 1'b0;
+                exp_overflow = 1'b0;
+            end
+            default: begin
+                exp_result  = 8'h00;
+                exp_carry   = 1'b0;
+                exp_overflow = 1'b0;
+            end
+        endcase
+        exp_zero = (exp_result == 8'h00);
+    endfunction
+    // ---------- Test generation ----------
+    initial begin
+        // ***** DECLARATIONS FIRST (before any statements) *****
+        alu_trans trans;
+        logic [7:0] exp_result;
+        logic       exp_zero, exp_carry, exp_overflow;
+        integer     pass_count = 0, fail_count = 0;
+
+        // ***** NOW PROCEDURAL STATEMENTS *****
+        $dumpfile("dump.vcd");
+        $dumpvars(0, tb_alu);
+
+        trans = new();
+
+        $display("\n===== Generating 15 Constrained‑Random ALU Vectors =====\n");
+
+        repeat (15) begin
+            if (!trans.randomize()) begin
+                $error("Randomization failed!");
+                $finish;
+            end
+
+            // Drive DUT
+            opcode = trans.opcode;
+            a      = trans.a;
+            b      = trans.b;
+            #1;
+
+            // Compute expected
+            compute_expected(opcode, a, b,
+                             exp_result, exp_zero, exp_carry, exp_overflow);
+
+            trans.display("Input: ");
+            $write("  DUT result=%3d, zero=%b, carry=%b, overflow=%b",
+                   result, zero, carry, overflow);
+            $write("  Expected=%3d, zero=%b, carry=%b, overflow=%b",
+                   exp_result, exp_zero, exp_carry, exp_overflow);
+
+            if ((result === exp_result) &&
+                (zero === exp_zero) &&
+                (carry === exp_carry) &&
+                (overflow === exp_overflow)) begin
+                $display(" => PASS");
+                pass_count++;
+            end else begin
+                $display(" => FAIL");
+                fail_count++;
+            end
+            $display("---------------------------------------------------");
+        end
+
+        $display("\n==========================================");
+        $display("SUMMARY: %0d PASS, %0d FAIL, Success: %0.2f%%",
+                 pass_count, fail_count,
+                 (pass_count * 100.0) / (pass_count + fail_count));
+        $display("==========================================");
+        $finish;
+    end
+endmodule
